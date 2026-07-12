@@ -4,12 +4,13 @@ services:
     image: ty-phu-bot:latest
     container_name: ty-phu-bot
     restart: unless-stopped
-    env_file: [.env]
     environment:
       DATABASE_PATH: /app/data/ty_phu.db
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      BOT_TOKEN_FILE: /app/bot_token.txt
     volumes:
       - bot-data:/app/data
+      - ./bot_token.txt:/app/bot_token.txt:ro
     stop_grace_period: 20s
     healthcheck:
       test: ["CMD", "python", "-c", "import sqlite3, os; sqlite3.connect(os.environ['DATABASE_PATH']).close()"]

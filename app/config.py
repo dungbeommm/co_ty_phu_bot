@@ -2,19 +2,20 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 # =====================================================================
-#  ĐIỀN TOKEN TRỰC TIẾP TẠI ĐÂY (nếu không muốn dùng file .env)
+#  Tùy chọn cuối cùng: điền token trực tiếp nếu không dùng bot_token.txt.
 #  Dán token MỚI từ @BotFather vào giữa hai dấu ngoặc kép bên dưới.
 #  Ví dụ: TOKEN = "123456789:AAExxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 #  ⚠️ CẢNH BÁO BẢO MẬT:
 #    - KHÔNG commit / đẩy file này lên GitHub khi đã có token.
 #    - Nếu token từng bị lộ, hãy /revoke trong @BotFather rồi lấy token mới.
-#    - Cách an toàn hơn là để trống ở đây và dùng file .env.
+#    - Cách an toàn hơn là chạy: python setup-token.py
 # =====================================================================
-TOKEN = ""
+TOKEN = "8725367595:AAFFZE6MF1zM1DJH4Tdtc8RN4ChiOyXvqL4"
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,17 +28,19 @@ class Settings:
     starting_cash: int = 15_000_000
     pass_go_salary: int = 2_000_000
     allowed_topic_ids: tuple[int, ...] = ()
-    lock_topic_messages: bool = True
+    turn_seconds: int = 300
 
     @classmethod
     def from_env(cls) -> "Settings":
         load_dotenv()
-        # Ưu tiên .env / biến môi trường; nếu trống thì dùng TOKEN điền trực tiếp ở trên.
-        token = os.getenv("BOT_TOKEN", "").strip() or TOKEN.strip()
+        # Không cần Secret Manager: server có thể lưu token trong bot_token.txt (chmod 600).
+        token_file = Path(os.getenv("BOT_TOKEN_FILE", "bot_token.txt"))
+        file_token = token_file.read_text(encoding="utf-8").strip() if token_file.is_file() else ""
+        token = os.getenv("BOT_TOKEN", "").strip() or file_token or TOKEN.strip()
         if not token or token.startswith("REPLACE_WITH"):
             raise RuntimeError(
-                "Thiếu BOT_TOKEN. Hãy điền token vào biến TOKEN ở đầu file app/config.py, "
-                "hoặc đặt BOT_TOKEN trong file .env"
+                "Thiếu token. Hãy chạy deploy/install-server.sh để tạo bot_token.txt, "
+                "hoặc tự tạo file bot_token.txt chỉ chứa token BotFather."
             )
 
         topic_ids_raw = os.getenv("ALLOWED_TOPIC_IDS", "").strip()
@@ -59,8 +62,7 @@ class Settings:
             starting_cash=int(os.getenv("STARTING_CASH", "15000000")),
             pass_go_salary=int(os.getenv("PASS_GO_SALARY", "2000000")),
             allowed_topic_ids=allowed_topic_ids,
-            lock_topic_messages=os.getenv("LOCK_TOPIC_MESSAGES", "true").lower()
-            in {"1", "true", "yes", "on"},
+            turn_seconds=max(30, int(os.getenv("TURN_SECONDS", "300"))),
         )
         if settings.min_players < 2:
             raise RuntimeError("MIN_PLAYERS phải >= 2")

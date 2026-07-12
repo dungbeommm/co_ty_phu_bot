@@ -10,7 +10,7 @@ Bot nhóm Telegram viết bằng **Python 3.11+ / aiogram 3 / SQLite**.
 - Chỉ người chơi được bấm nút game; menu cũ tự biến mất sau thao tác hợp lệ
 - Mỗi lượt chỉ gửi một ảnh kèm kết quả/menu để tránh giới hạn tin nhắn Telegram
 - Tự chờ theo `retry_after` khi Telegram bật flood control; menu cũ không thể bấm lặp
-- Có thể xoá tin nhắn của người ngoài topic game bằng `LOCK_TOPIC_MESSAGES=true`
+- Bot chỉ tự xoá menu do chính bot gửi, không cần quyền admin
 - Xúc xắc, qua Start, mua đất bằng nút, tiền thuê, thuế, Cơ hội, tù, phá sản
 - **Bàn cờ 2D**: mỗi lượt /roll, /status, /startgame bot gửi ảnh bàn cờ (vị trí quân, chủ đất, tiền mặt)
 - Xếp hạng cuối ván và quy đổi tài sản thành ⭐
@@ -22,7 +22,9 @@ Bot nhóm Telegram viết bằng **Python 3.11+ / aiogram 3 / SQLite**.
 
 ## Bảo mật
 
-Token từng dán vào chat/GitHub phải được thu hồi bằng `/revoke` trong @BotFather. Chỉ dùng token mới qua `.env` hoặc GitHub Actions Secret. Không commit `.env`.
+Không cần Secret Manager hay biến môi trường chứa token. Chạy `python setup-token.py` để
+lưu token vào `bot_token.txt` trên máy chạy bot. File này được bỏ qua bởi Git và nên đặt
+quyền `600` trên Linux. Token từng bị lộ phải được `/revoke` trong @BotFather.
 
 ## Chạy local
 
@@ -30,8 +32,7 @@ Token từng dán vào chat/GitHub phải được thu hồi bằng `/revoke` tr
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\\Scripts\\activate
 pip install -r requirements.txt
-cp .env.example .env
-# điền BOT_TOKEN mới vào .env
+python setup-token.py
 python -m app.main
 ```
 
@@ -41,7 +42,7 @@ python -m app.main
 2. Cài các extension được đề xuất: Python, Pylance, Debugpy.
 3. Mở Command Palette (`Ctrl+Shift+P`) → `Python: Create Environment` → chọn `.venv`.
 4. Mở Terminal và chạy `pip install -r requirements-dev.txt`.
-5. Sao chép `.env.example` thành `.env`, sau đó nhập token mới trên máy cá nhân.
+5. Chạy `python setup-token.py` rồi nhập token BotFather; không cần tạo Secret.
 6. Mở biểu tượng **Testing** ở thanh bên → bấm **Run All Tests**.
 7. Muốn chạy bot: mở **Run and Debug** → chọn `Bot: chạy Telegram` → nhấn `F5`.
 
@@ -58,8 +59,7 @@ Hai cách deploy, chi tiết trong `deploy/README.md`.
 ### Cách A — Docker Compose (khuyến nghị)
 
 ```bash
-cp .env.example .env
-# điền BOT_TOKEN mới
+python3 setup-token.py
 docker compose up -d --build
 docker compose logs -f bot
 ```
@@ -70,7 +70,6 @@ Dữ liệu SQLite nằm trong volume `bot-data`, có healthcheck và tự khở
 
 ```bash
 sudo bash deploy/install-server.sh
-sudo nano /opt/ty-phu-bot/.env      # điền BOT_TOKEN mới
 sudo systemctl start ty-phu-bot
 sudo systemctl status ty-phu-bot
 journalctl -u ty-phu-bot -f
@@ -83,7 +82,7 @@ Bot có graceful shutdown: khi `docker stop` hoặc `systemctl stop`, nó dừng
 ```bash
 make install        # tạo .venv và cài thư viện
 make dev-install    # cài kèm ruff
-make run            # chạy bot (cần .env)
+make run            # chạy bot (cần bot_token.txt)
 make test           # chạy unit test
 make docker-up      # chạy bằng Docker Compose
 make docker-logs    # xem log
@@ -100,8 +99,7 @@ git remote add origin https://github.com/USERNAME/ty-phu-bot-python.git
 git push -u origin main
 ```
 
-- Chỉ có một workflow `bot.yml`: push/PR tự chạy kiểm thử.
-- `Actions → Test and smoke-test bot → Run workflow` chạy thử bot 30 giây. Trước đó tạo Secret `BOT_TOKEN` trong `Settings → Secrets and variables → Actions`.
+- Workflow `bot.yml` chỉ biên dịch và chạy unit test, không cần token hay GitHub Secret.
 - Docker image có thể build trực tiếp bằng `docker compose`; workflow này không publish image.
 
 > GitHub Actions không phải hosting 24/7. Dùng image GHCR trên VPS/Render/Railway/Fly.io. Chỉ chạy một instance khi dùng long polling + SQLite.
@@ -113,7 +111,8 @@ git push -u origin main
 - Giá đất: `600.000₫`–`2.800.000₫`
 - Phí ra tù: `500.000₫`
 - Mỗi `1.000.000₫` tài sản quy đổi thêm `1⭐` cuối ván.
-- Chỉ cần sở hữu một khu đất là có thể xây trên đất đó; không cần trọn bộ màu.
+- Lần đầu tới đất chưa có chủ là lần mua đất. Chỉ từ lần thứ hai ghé lại, người chơi
+  mới được xây và phải còn đứng trên chính khu đất đó khi bắt đầu lượt kế tiếp.
 - Mỗi đất xây độc lập tối đa 4 nhà, sau đó nâng cấp thành 1 khách sạn.
 - Giá xây theo nhóm màu: `500.000₫`, `1.000.000₫`, `1.500.000₫` hoặc `2.000.000₫`.
 - Tiền thuê theo cấp công trình: nhà 1/2/3/4 lần lượt ×5/×15/×45/×80;
@@ -132,6 +131,12 @@ git push -u origin main
 - **🎁 Hộp bí ẩn** có 45% rỗng; jackpot chỉ 1%. Các phần thưởng khác có tỉ lệ thấp.
 - **💣 Bom phá nhà** có 55% phá thành công; thất bại vẫn mất bom.
 - **🕶 Chợ đen** bán Bộ phá khóa (+15% cơ hội trộm), Bom phá nhà và Thẻ tẩu thoát.
+- Trong mỗi lượt chỉ được chọn **một hành động chiến thuật tổng cộng**: Xây nhà,
+  Phá nhà, mở Hộp bí ẩn, Trộm, mua Chợ đen hoặc Phá hoại. Lượt phụ do xúc xắc đôi
+  vẫn là cùng một lượt và không đặt lại quyền hành động.
+- **Vòng quay và Tài/Xỉu không bị giới hạn số lần trong lượt**; Trạng thái cũng xem tự do.
+- Trộm ngân hàng chỉ được thử một lần cho mỗi người trong cả ván.
+- Mọi lần cược phải giữ lại ít nhất `100.000₫`, tránh người chơi tự đưa tiền về 0.
 
 ## Lệnh
 

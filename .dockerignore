@@ -1,6 +1,7 @@
 .git
 .github
 .env
+bot_token.txt
 .venv
 __pycache__
 .pytest_cache

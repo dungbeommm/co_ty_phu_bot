@@ -19,7 +19,7 @@ dev-install: venv ## Cài thư viện phát triển
 	$(BIN)/pip install --upgrade pip
 	$(BIN)/pip install -r requirements-dev.txt
 
-run: ## Chạy bot (cần .env)
+run: ## Chạy bot (cần bot_token.txt)
 	$(BIN)/python -m app.main
 
 test: ## Chạy unit test

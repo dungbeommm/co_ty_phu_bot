@@ -20,7 +20,7 @@ from app.game.engine import (
     steal_from_player,
     surrender,
 )
-from app.game.models import GameRoom, Phase, Player
+from app.game.models import GameRoom, Phase, Player, PlayerStatus
 
 
 def make_room() -> GameRoom:
@@ -34,6 +34,12 @@ def make_room() -> GameRoom:
         min_players=2,
         max_players=6,
     )
+
+
+def next_round(room: GameRoom) -> None:
+    """Đưa lượt qua người kế tiếp rồi quay lại người đầu để mô phỏng vòng mới."""
+    room.advance_turn()
+    room.advance_turn()
 
 
 class GameTests(unittest.TestCase):
@@ -59,7 +65,20 @@ class GameTests(unittest.TestCase):
         self.assertTrue(result.awaiting_purchase)
         decide_purchase(room, 1, True)
         self.assertEqual(room.board[1].owner_id, 1)
+        self.assertEqual(room.board[1].owner_landings, 1)
         self.assertIn(1, room.players[0].property_indexes)
+
+    def test_second_landing_unlocks_building(self) -> None:
+        room = make_room()
+        join_room(room, 2, "B")
+        start_room(room, 1)
+        room.players[0].position = 23
+        roll_turn(room, 1, roller=lambda: (1, 1))
+        decide_purchase(room, 1, True)
+        room.players[0].position = 23
+        roll_turn(room, 1, roller=lambda: (1, 1))
+        self.assertEqual(room.board[1].owner_landings, 2)
+        self.assertEqual(buildable_properties(room, 1), [1])
 
     def test_bankruptcy_preserves_assets(self) -> None:
         room = make_room()
@@ -86,7 +105,11 @@ class GameTests(unittest.TestCase):
         join_room(room, 2, "B")
         start_room(room, 1)
         room.board[1].owner_id = 1
+        room.board[1].owner_landings = 1
         room.players[0].property_indexes = [1]
+        room.players[0].position = 1
+        self.assertEqual(buildable_properties(room, 1), [])
+        room.board[1].owner_landings = 2
         self.assertEqual(buildable_properties(room, 1), [1])
 
     def test_build_house_increases_rent_and_asset_value(self) -> None:
@@ -95,7 +118,9 @@ class GameTests(unittest.TestCase):
         start_room(room, 1)
         for index in (1, 3):
             room.board[index].owner_id = 1
+            room.board[index].owner_landings = 2
         room.players[0].property_indexes = [1, 3]
+        room.players[0].position = 1
         before_cash = room.players[0].cash
         before_assets = asset_value(room, room.players[0])
         text = build_house(room, 1, 1)
@@ -104,28 +129,32 @@ class GameTests(unittest.TestCase):
         self.assertLess(room.players[0].cash, before_cash)
         self.assertEqual(asset_value(room, room.players[0]), before_assets)
 
-    def test_houses_no_longer_need_even_building(self) -> None:
+    def test_can_build_again_on_later_turn_while_still_on_land(self) -> None:
         room = make_room()
         join_room(room, 2, "B")
         start_room(room, 1)
         for index in (1, 3):
             room.board[index].owner_id = 1
+            room.board[index].owner_landings = 2
         room.players[0].property_indexes = [1, 3]
+        room.players[0].position = 1
         build_house(room, 1, 1)
-        self.assertEqual(buildable_properties(room, 1), [1, 3])
+        next_round(room)
+        build_house(room, 1, 1)
+        self.assertEqual(room.board[1].houses, 2)
 
     def test_four_houses_upgrade_to_hotel(self) -> None:
         room = make_room()
         join_room(room, 2, "B")
         start_room(room, 1)
-        for index in (1, 3):
-            room.board[index].owner_id = 1
-        room.players[0].property_indexes = [1, 3]
+        room.board[1].owner_id = 1
+        room.board[1].owner_landings = 2
+        room.players[0].property_indexes = [1]
+        room.players[0].position = 1
         for _ in range(5):
             build_house(room, 1, 1)
-            build_house(room, 1, 3)
+            next_round(room)
         self.assertEqual(room.board[1].houses, 5)
-        self.assertEqual(room.board[3].houses, 5)
         self.assertEqual(buildable_properties(room, 1), [])
 
     def test_full_color_group_doubles_unbuilt_rent(self) -> None:
@@ -170,14 +199,17 @@ class GameTests(unittest.TestCase):
         start_room(room, 1)
         for index in (1, 3):
             room.board[index].owner_id = 1
+            room.board[index].owner_landings = 2
         room.players[0].property_indexes = [1, 3]
+        room.players[0].position = 1
         build_house(room, 1, 1)
+        next_round(room)
         before = room.players[0].cash
         demolish_house(room, 1, 1)
         self.assertEqual(room.board[1].houses, 0)
         self.assertGreater(room.players[0].cash, before)
 
-    def test_steal_is_unlimited_and_takes_random_percentage(self) -> None:
+    def test_steal_is_limited_once_per_turn(self) -> None:
         room = make_room()
         join_room(room, 2, "B")
         start_room(room, 1)
@@ -187,6 +219,9 @@ class GameTests(unittest.TestCase):
         first_reward = target_before * 73 // 100
         self.assertEqual(room.players[0].cash, before + first_reward)
         self.assertEqual(room.players[1].cash, target_before - first_reward)
+        with self.assertRaises(GameError):
+            steal_from_player(room, 1, 2, rng=random.Random(1))
+        next_round(room)
         second_before = room.players[1].cash
         steal_from_player(room, 1, 2, rng=random.Random(1))
         self.assertEqual(room.players[1].cash, second_before - second_before * 73 // 100)
@@ -198,6 +233,29 @@ class GameTests(unittest.TestCase):
         main_cash = room.players[0].cash
         gamble(room, 1, "roulette", 500_000, rng=random.Random(1))
         self.assertEqual(room.players[0].cash, main_cash - 250_000)
+        # Vòng quay và Tài/Xỉu không bị giới hạn theo lượt.
+        gamble(room, 1, "roulette", 500_000, rng=random.Random(1))
+        self.assertEqual(room.players[0].cash, main_cash - 500_000)
+        with self.assertRaises(GameError):
+            gamble(room, 1, "tai", room.players[0].cash, rng=random.Random(1))
+
+    def test_only_one_strategic_action_per_turn(self) -> None:
+        room = make_room()
+        join_room(room, 2, "B")
+        start_room(room, 1)
+        room.board[1].owner_id = 1
+        room.board[1].owner_landings = 2
+        room.players[0].property_indexes = [1]
+        room.players[0].position = 1
+        build_house(room, 1, 1)
+        with self.assertRaises(GameError):
+            build_house(room, 1, 1)
+        with self.assertRaises(GameError):
+            buy_illegal_item(room, 1, "lockpick")
+        next_round(room)
+        buy_illegal_item(room, 1, "getaway")
+        with self.assertRaises(GameError):
+            build_house(room, 1, 1)
 
     def test_bank_theft_rewards_fifty_million(self) -> None:
         room = make_room()
@@ -207,6 +265,9 @@ class GameTests(unittest.TestCase):
         text = steal_from_player(room, 1, 0, rng=random.Random(1))
         self.assertIn("50.000.000", text)
         self.assertEqual(room.players[0].cash, before + 50_000_000)
+        next_round(room)
+        with self.assertRaises(GameError):
+            steal_from_player(room, 1, 0, rng=random.Random(1))
 
     def test_failed_theft_loses_fee_land_and_goes_to_jail(self) -> None:
         class FailureRng:
@@ -227,12 +288,54 @@ class GameTests(unittest.TestCase):
         self.assertEqual(room.players[0].property_indexes, [])
         self.assertIsNone(room.board[1].owner_id)
         self.assertEqual(room.players[0].jail_turns_left, 3)
+        self.assertEqual(room.current_player.user_id, 2)
+
+    def test_jailed_player_cannot_use_side_actions(self) -> None:
+        room = make_room()
+        join_room(room, 2, "B")
+        start_room(room, 1)
+        room.players[0].status = PlayerStatus.JAILED
+        room.players[0].jail_turns_left = 3
+        self.assertEqual(buildable_properties(room, 1), [])
+        with self.assertRaises(GameError):
+            gamble(room, 1, "roulette", 500_000, rng=random.Random(1))
+        with self.assertRaises(GameError):
+            open_mystery_box(room, 1, rng=random.Random(1))
+        with self.assertRaises(GameError):
+            steal_from_player(room, 1, 2, rng=random.Random(1))
+        with self.assertRaises(GameError):
+            buy_illegal_item(room, 1, "lockpick")
+
+    def test_mystery_building_voucher_does_not_require_cash(self) -> None:
+        class HouseRng:
+            def randint(self, _start, _end):
+                return 91
+
+            def choice(self, values):
+                return values[0]
+
+        room = make_room()
+        join_room(room, 2, "B")
+        start_room(room, 1)
+        room.board[1].owner_id = 1
+        room.board[1].owner_landings = 2
+        room.players[0].property_indexes = [1]
+        room.players[0].position = 1
+        room.players[0].cash = 0
+        text = open_mystery_box(room, 1, rng=HouseRng())
+        self.assertIn("Phiếu xây miễn phí", text)
+        self.assertEqual(room.players[0].building_vouchers, 1)
+        next_round(room)
+        text = build_house(room, 1, 1)
+        self.assertIn("Phiếu xây miễn phí", text)
+        self.assertEqual(room.board[1].houses, 1)
 
     def test_black_market_and_sabotage(self) -> None:
         room = make_room()
         join_room(room, 2, "B")
         start_room(room, 1)
         buy_illegal_item(room, 1, "bomb")
+        next_round(room)
         room.board[3].owner_id = 2
         room.board[3].houses = 1
         room.players[1].property_indexes = [3]

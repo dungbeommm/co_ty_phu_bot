@@ -8,7 +8,6 @@ Type=simple
 # Sửa đường dẫn và user cho phù hợp server của bạn.
 User=typhu
 WorkingDirectory=/opt/ty-phu-bot
-EnvironmentFile=/opt/ty-phu-bot/.env
 ExecStart=/opt/ty-phu-bot/.venv/bin/python -m app.main
 Restart=always
 RestartSec=5

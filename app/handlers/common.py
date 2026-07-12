@@ -19,6 +19,8 @@ def status_text(room: GameRoom) -> str:
             extras.append(f"🛡{p.rent_shields}")
         if not p.mystery_used:
             extras.append("🎁")
+        if p.building_vouchers:
+            extras.append(f"🎟{p.building_vouchers}")
         illegal = p.lockpicks + p.demolition_bombs + p.getaway_cards
         if illegal:
             extras.append(f"🕶{illegal}")

@@ -1,0 +1,7 @@
+CREATE TABLE IF NOT EXISTS active_games (
+ chat_id INTEGER NOT NULL,
+ topic_id INTEGER NOT NULL DEFAULT 0,
+ payload TEXT NOT NULL,
+ updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ PRIMARY KEY (chat_id, topic_id)
+);

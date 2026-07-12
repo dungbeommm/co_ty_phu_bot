@@ -13,11 +13,15 @@ class Database:
 
     async def initialize(self) -> None:
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        migration = Path("migrations/001_init.sql").read_text(encoding="utf-8")
+        migrations = [
+            Path("migrations/001_init.sql").read_text(encoding="utf-8"),
+            Path("migrations/002_active_games.sql").read_text(encoding="utf-8"),
+        ]
         async with aiosqlite.connect(self.path) as db:
             await db.execute("PRAGMA journal_mode=WAL")
             await db.execute("PRAGMA busy_timeout=5000")
-            await db.executescript(migration)
+            for migration in migrations:
+                await db.executescript(migration)
             await db.commit()
 
     async def upsert_user(self, user_id: int, chat_id: int, username: str | None, name: str) -> None:
@@ -82,3 +86,31 @@ class Database:
                 (chat_id,),
             )
             return await cursor.fetchall()
+
+    async def save_active_game(self, chat_id: int, topic_id: int | None, payload: str) -> None:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """INSERT INTO active_games(chat_id, topic_id, payload, updated_at)
+                VALUES(?,?,?,CURRENT_TIMESTAMP)
+                ON CONFLICT(chat_id, topic_id) DO UPDATE SET
+                payload=excluded.payload, updated_at=CURRENT_TIMESTAMP""",
+                (chat_id, topic_id or 0, payload),
+            )
+            await db.commit()
+
+    async def delete_active_game(self, chat_id: int, topic_id: int | None) -> None:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                "DELETE FROM active_games WHERE chat_id=? AND topic_id=?",
+                (chat_id, topic_id or 0),
+            )
+            await db.commit()
+
+    async def load_active_games(self) -> list[tuple[int, int | None, str]]:
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute("SELECT chat_id, topic_id, payload FROM active_games")
+            rows = await cursor.fetchall()
+        result: list[tuple[int, int | None, str]] = []
+        for chat_id, topic_id, payload in rows:
+            result.append((int(chat_id), None if int(topic_id) == 0 else int(topic_id), str(payload)))
+        return result

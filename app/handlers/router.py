@@ -18,24 +18,39 @@ from aiogram.types import (
 from app.db import Database
 from app.game.engine import (
     GameError,
+    MIN_CASH_RESERVE,
     asset_value,
+    assign_secret_missions,
+    buy_insurance,
     build_house,
     buildable_properties,
     building_name,
     buy_illegal_item,
     decide_purchase,
     demolish_house,
+    final_stats,
+    pay_bail,
     demolishable_properties,
     gamble,
     house_cost,
+    mortgage_property,
+    mortgage_value,
+    mortgageable_properties,
     open_mystery_box,
+    property_info,
+    propose_trade,
+    recent_events,
+    respond_trade,
     roll_turn,
     sabotage_house,
     start_room,
     steal_from_player,
     surrender,
+    unmortgage_cost,
+    unmortgage_property,
+    unmortgageable_properties,
 )
-from app.game.models import GameRoom, Phase
+from app.game.models import GameRoom, Phase, PlayerStatus
 from app.handlers.common import final_rank, lobby_text, reward_for, status_text
 from app.render import render_board
 from app.services.games import GameManager
@@ -79,6 +94,7 @@ def _lobby_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="➕ Tham gia", callback_data="game:join")],
+            [InlineKeyboardButton(text="🛡 Bật/Tắt chế độ an toàn", callback_data="game:safe")],
             [
                 InlineKeyboardButton(text="🚀 Bắt đầu", callback_data="game:start"),
                 InlineKeyboardButton(text="📋 Trạng thái", callback_data="game:status"),
@@ -89,31 +105,67 @@ def _lobby_menu() -> InlineKeyboardMarkup:
 
 
 def _turn_menu(room: GameRoom) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=f"🎲 {room.current_player.name} đổ xúc xắc", callback_data="game:roll")],
-            [
-                InlineKeyboardButton(text="🏠 Xây nhà", callback_data="game:build"),
-                InlineKeyboardButton(text="🏚 Phá nhà", callback_data="game:demolish"),
-            ],
-            [
-                InlineKeyboardButton(text="🎁 Hộp bí ẩn", callback_data="game:mystery"),
-                InlineKeyboardButton(text="🥷 Trộm", callback_data="game:steal"),
-            ],
-            [
-                InlineKeyboardButton(text="🎡 Vòng quay", callback_data="game:wheel"),
-                InlineKeyboardButton(text="🎲 Tài/Xỉu", callback_data="game:taixiu"),
-            ],
+    if room.current_player.status is PlayerStatus.JAILED:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text=f"🔒 {room.current_player.name} thử ra tù", callback_data="game:roll")],
+                [InlineKeyboardButton(text="💵 Nộp phạt ra tù · 500K", callback_data="game:bail")],
+                [InlineKeyboardButton(text="📋 Trạng thái", callback_data="game:status")],
+                [InlineKeyboardButton(text="🏳 Chịu thua", callback_data="game:surrender")],
+            ]
+        )
+    strategic_available = "strategic" not in room.used_turn_actions
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(text=f"🎲 {room.current_player.name} đổ xúc xắc", callback_data="game:roll")]
+    ]
+
+    if strategic_available:
+        property_actions: list[InlineKeyboardButton] = []
+        if buildable_properties(room, room.current_player.user_id):
+            property_actions.append(InlineKeyboardButton(text="🏠 Xây tại đất đang đứng", callback_data="game:build"))
+        if demolishable_properties(room, room.current_player.user_id):
+            property_actions.append(InlineKeyboardButton(text="🏚 Phá nhà", callback_data="game:demolish"))
+        if mortgageable_properties(room, room.current_player.user_id):
+            property_actions.append(InlineKeyboardButton(text="🏦 Thế chấp", callback_data="game:mortgage"))
+        if unmortgageable_properties(room, room.current_player.user_id):
+            property_actions.append(InlineKeyboardButton(text="🔓 Chuộc đất", callback_data="game:unmortgage"))
+        if property_actions:
+            rows.append(property_actions)
+
+        special_actions: list[InlineKeyboardButton] = []
+        if not room.current_player.mystery_used:
+            special_actions.append(InlineKeyboardButton(text="🎁 Hộp bí ẩn", callback_data="game:mystery"))
+        special_actions.append(InlineKeyboardButton(text="🥷 Trộm", callback_data="game:steal"))
+        special_actions.append(InlineKeyboardButton(text="🤝 Giao dịch", callback_data="game:trade"))
+        rows.append(special_actions)
+
+    # Hai trò này được phép chơi nhiều lần trong cùng lượt.
+    rows.append(
+        [
+            InlineKeyboardButton(text="🎡 Vòng quay", callback_data="game:wheel"),
+            InlineKeyboardButton(text="🎲 Tài/Xỉu", callback_data="game:taixiu"),
+        ]
+    )
+
+    if strategic_available:
+        rows.append(
             [
                 InlineKeyboardButton(text="🕶 Chợ đen", callback_data="game:blackmarket"),
                 InlineKeyboardButton(text="💣 Phá hoại", callback_data="game:sabotage"),
-            ],
-            [
-                InlineKeyboardButton(text="📋 Trạng thái", callback_data="game:status"),
-            ],
-            [InlineKeyboardButton(text="🏳 Chịu thua", callback_data="game:surrender")],
+            ]
+        )
+
+    if strategic_available:
+        rows.append([InlineKeyboardButton(text="🛡 Bảo hiểm đất đang đứng", callback_data="game:insurance")])
+    rows.append([InlineKeyboardButton(text="📋 Trạng thái", callback_data="game:status")])
+    rows.append(
+        [
+            InlineKeyboardButton(text="📍 Thông tin đất", callback_data="game:info"),
+            InlineKeyboardButton(text="📜 Nhật ký", callback_data="game:log"),
         ]
     )
+    rows.append([InlineKeyboardButton(text="🏳 Chịu thua", callback_data="game:surrender")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _build_menu(room: GameRoom, actor_id: int) -> InlineKeyboardMarkup | None:
@@ -125,7 +177,8 @@ def _build_menu(room: GameRoom, actor_id: int) -> InlineKeyboardMarkup | None:
             InlineKeyboardButton(
                 text=(
                     f"🏠 {room.board[index].name} "
-                    f"→ {building_name(room.board[index].houses + 1)} · {house_cost(room.board[index]) // 1000}K"
+                    f"→ {building_name(room.board[index].houses + 1)} · "
+                    f"{'MIỄN PHÍ' if room.current_player.building_vouchers else str(house_cost(room.board[index]) // 1000) + 'K'}"
                 ),
                 callback_data=f"build:{index}",
             )
@@ -153,16 +206,25 @@ def _demolish_menu(room: GameRoom, actor_id: int) -> InlineKeyboardMarkup | None
 
 def _steal_menu(room: GameRoom, actor_id: int) -> InlineKeyboardMarkup | None:
     targets = [p for p in room.active_players if p.user_id != actor_id]
-    if not targets:
-        return None
     rows = [[InlineKeyboardButton(text=f"🥷 {p.name}", callback_data=f"extra:steal:{p.user_id}")] for p in targets]
-    rows.append([InlineKeyboardButton(text="🏦 Trộm ngân hàng · thưởng 50 triệu", callback_data="extra:steal:0")])
+    actor = room.find_player(actor_id)
+    if actor and not actor.bank_heist_used:
+        rows.append([InlineKeyboardButton(text="🏦 Trộm ngân hàng · thưởng 50 triệu", callback_data="extra:steal:0")])
+    if not rows:
+        return None
     rows.append([InlineKeyboardButton(text="↩️ Quay lại", callback_data="extra:back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _stake_values(cash: int) -> list[int]:
-    return sorted({value for value in (500_000, 1_000_000, 5_000_000, 10_000_000, cash) if 0 < value <= cash})
+    maximum = cash - MIN_CASH_RESERVE
+    return sorted(
+        {
+            value
+            for value in (500_000, 1_000_000, 5_000_000, 10_000_000, maximum)
+            if 0 < value <= maximum
+        }
+    )
 
 
 def _wheel_menu(cash: int) -> InlineKeyboardMarkup | None:
@@ -235,11 +297,14 @@ async def _ensure(message: Message, db: Database) -> None:
 
 
 async def _remove_menu(message: Message) -> None:
+    """Xoá menu do bot gửi; nếu không xoá được thì ẩn bàn phím."""
     try:
-        await message.edit_reply_markup(reply_markup=None)
+        await message.delete()
     except Exception:
-        # Menu có thể đã bị Telegram xoá/chỉnh bởi một callback đến đồng thời.
-        pass
+        try:
+            await message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
 
 
 async def _with_flood_retry(call: Callable[[], Awaitable[T]]) -> T:
@@ -336,7 +401,7 @@ async def _run_roll(message: Message, actor_id: int, db: Database, games: GameMa
     keyboard = _purchase_menu() if result.awaiting_purchase else _turn_menu(room)
     caption = result.text
     if ranking:
-        caption = f"{caption}\n\n{ranking}"
+        caption = f"{caption}\n\n{ranking}{final_stats(room)}"
         keyboard = None
     elif not result.awaiting_purchase:
         caption = f"{caption}\n\n➡️ Lượt: {room.current_player.name}"
@@ -554,6 +619,16 @@ async def game_action(
             await _remove_menu(message)
             sent = await _answer(message, lobby_text(room), _lobby_menu())
             _activate_menu(entry, sent)
+        elif action == "safe":
+            if entry.room.host_id != callback.from_user.id or entry.room.phase is not Phase.LOBBY:
+                raise GameError("Chỉ chủ phòng có thể đổi chế độ an toàn trước khi bắt đầu.")
+            if not _claim_active_menu(entry, message):
+                raise GameError("Menu này đã được dùng hoặc đã cũ.")
+            entry.room.safe_mode = not entry.room.safe_mode
+            await callback.answer()
+            await _remove_menu(message)
+            sent = await _answer(message, f"🛡 Chế độ an toàn: {'BẬT' if entry.room.safe_mode else 'TẮT'} (bật sẽ khóa trộm/phá hoại/chợ đen).", _lobby_menu())
+            _activate_menu(entry, sent)
         elif action == "start":
             if entry.room.host_id != callback.from_user.id:
                 raise GameError("Chỉ chủ phòng được bắt đầu.")
@@ -588,12 +663,34 @@ async def game_action(
                 raise GameError("Chỉ người đang tới lượt được xây nhà.")
             menu = _build_menu(entry.room, callback.from_user.id)
             if not menu:
-                raise GameError("Chưa có đất thuộc sở hữu đủ tiền để xây.")
+                raise GameError(
+                    "Chỉ xây được khi đang đứng trên đất của mình đã ghé ít nhất 2 lần."
+                )
             if not _claim_active_menu(entry, message):
                 raise GameError("Menu này đã được dùng hoặc đã cũ.")
             await callback.answer()
             await _remove_menu(message)
             sent = await _answer(message, "🏠 Chọn khu đất muốn xây nhà:", menu)
+            _activate_menu(entry, sent)
+        elif action == "bail":
+            if not _claim_active_menu(entry, message):
+                raise GameError("Menu này đã được dùng hoặc đã cũ.")
+            async with entry.lock:
+                text = pay_bail(entry.room, callback.from_user.id)
+            await callback.answer()
+            await _remove_menu(message)
+            sent = await _send_board(message, entry.room, text, _turn_menu(entry.room))
+            _activate_menu(entry, sent)
+        elif action == "insurance":
+            if entry.room.current_player.user_id != callback.from_user.id:
+                raise GameError("Chỉ người đang tới lượt được mua bảo hiểm.")
+            if not _claim_active_menu(entry, message):
+                raise GameError("Menu này đã được dùng hoặc đã cũ.")
+            async with entry.lock:
+                text = buy_insurance(entry.room, callback.from_user.id)
+            await callback.answer()
+            await _remove_menu(message)
+            sent = await _send_board(message, entry.room, text, _turn_menu(entry.room))
             _activate_menu(entry, sent)
         elif action == "mystery":
             if entry.room.current_player.user_id != callback.from_user.id:
@@ -621,6 +718,8 @@ async def game_action(
             sent = await _answer(message, "🏚 Chọn nhà muốn phá (thu hồi 50% giá xây):", menu)
             _activate_menu(entry, sent)
         elif action == "steal":
+            if entry.room.safe_mode:
+                raise GameError("Chế độ an toàn đang bật: trộm bị tắt.")
             if entry.room.current_player.user_id != callback.from_user.id:
                 raise GameError("Chỉ người đang tới lượt được trộm.")
             menu = _steal_menu(entry.room, callback.from_user.id)
@@ -662,6 +761,8 @@ async def game_action(
             sent = await _answer(message, f"🎲 Chọn cửa và tiền cược · hiện có {player.cash:,}₫", menu)
             _activate_menu(entry, sent)
         elif action == "blackmarket":
+            if entry.room.safe_mode:
+                raise GameError("Chế độ an toàn đang bật: chợ đen bị tắt.")
             if entry.room.current_player.user_id != callback.from_user.id:
                 raise GameError("Chỉ người đang tới lượt được vào chợ đen.")
             if not _claim_active_menu(entry, message):
@@ -671,6 +772,8 @@ async def game_action(
             sent = await _answer(message, "🕶 CHỢ ĐEN — mua bằng tiền trong ván:", _black_market_menu())
             _activate_menu(entry, sent)
         elif action == "sabotage":
+            if entry.room.safe_mode:
+                raise GameError("Chế độ an toàn đang bật: phá hoại bị tắt.")
             if entry.room.current_player.user_id != callback.from_user.id:
                 raise GameError("Chỉ người đang tới lượt được phá hoại.")
             if player.demolition_bombs <= 0:
@@ -870,19 +973,4 @@ async def leaderboard(message: Message, db: Database, games: GameManager) -> Non
     await _answer(message, "\n".join(lines) if rows else "Chưa có dữ liệu.")
 
 
-@router.message()
-async def block_spectator_messages(message: Message, games: GameManager) -> None:
-    """Khoá chat của người ngoài trong topic đang chơi nếu đã bật cấu hình."""
-    if not games.settings.lock_topic_messages or not _topic_allowed(message, games):
-        return
-    entry = _room(message, games)
-    if not entry or not message.from_user:
-        return
-    if entry.room.find_player(message.from_user.id):
-        return
-    try:
-        await message.delete()
-    except Exception:
-        # Bot cần quyền Delete messages; nếu thiếu quyền thì Telegram sẽ từ chối.
-        pass
     sabotage_house,

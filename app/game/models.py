@@ -39,6 +39,8 @@ class Tile:
     color_group: int | None = None
     owner_id: int | None = None
     houses: int = 0
+    owner_landings: int = 0
+    mortgaged: bool = False
 
 
 @dataclass(slots=True)
@@ -58,6 +60,14 @@ class Player:
     lockpicks: int = 0
     demolition_bombs: int = 0
     getaway_cards: int = 0
+    building_vouchers: int = 0
+    bank_heist_used: bool = False
+    secret_mission: str = ""
+    mission_progress: int = 0
+    mission_done: bool = False
+    insured_tiles: set[int] = field(default_factory=set)
+    rent_collected: int = 0
+    lucky_points: int = 0
 
     @property
     def active(self) -> bool:
@@ -80,6 +90,16 @@ class GameRoom:
     pending_tile_index: int | None = None
     pending_player_id: int | None = None
     out_count: int = 0
+    used_turn_actions: set[str] = field(default_factory=set)
+    event_log: list[str] = field(default_factory=list)
+    turn_deadline: float | None = None
+    pending_trade: dict | None = None
+    parking_fund: int = 0
+    market_event: str = ""
+    market_event_until: int = 0
+    safe_mode: bool = False
+    turns_played: int = 0
+    max_turns: int = 50
 
     @property
     def current_player(self) -> Player:
@@ -98,7 +118,15 @@ class GameRoom:
         for _ in self.players:
             self.turn_index = (self.turn_index + 1) % len(self.players)
             if self.current_player.active:
+                self.used_turn_actions.clear()
+                self.turn_deadline = None
+                self.pending_trade = None
                 return
+
+    def log(self, text: str) -> None:
+        self.event_log.append(text)
+        if len(self.event_log) > 40:
+            del self.event_log[:-40]
 
 
 @dataclass(slots=True)
