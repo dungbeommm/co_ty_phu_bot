@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 #    - Nếu token từng bị lộ, hãy /revoke trong @BotFather rồi lấy token mới.
 #    - Cách an toàn hơn là để trống ở đây và dùng file .env.
 # =====================================================================
-TOKEN = ""
+TOKEN = "8725367595:AAFFZE6MF1zM1DJH4Tdtc8RN4ChiOyXvqL4"
 
 
 @dataclass(frozen=True, slots=True)
