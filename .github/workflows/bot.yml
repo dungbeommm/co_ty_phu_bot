@@ -1,0 +1,73 @@
+name: Test and smoke-test bot
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: telegram-bot-workflow
+  cancel-in-progress: true
+
+jobs:
+  test-and-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Compile Python
+        run: python -m compileall -q app tests
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Check BOT_TOKEN
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        run: |
+          if [ -z "$BOT_TOKEN" ]; then
+            echo "::error::Hãy tạo Repository Secret có tên BOT_TOKEN"
+            exit 1
+          fi
+          echo "BOT_TOKEN đã được cấu hình."
+
+      - name: Run bot for 30 seconds
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          DATABASE_PATH: data/smoke-test.db
+          LOG_LEVEL: INFO
+          MIN_PLAYERS: "2"
+          MAX_PLAYERS: "6"
+          STARTING_CASH: "15000000"
+          PASS_GO_SALARY: "2000000"
+        run: |
+          mkdir -p data
+          set +e
+          timeout 30s python -m app.main
+          code=$?
+          set -e
+
+          if [ "$code" -eq 124 ]; then
+            echo "Bot đã chạy ổn định trong 30 giây."
+            exit 0
+          fi
+
+          exit "$code"
