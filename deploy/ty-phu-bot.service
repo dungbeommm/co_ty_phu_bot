@@ -1,0 +1,25 @@
+[Unit]
+Description=Ty Phu Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Sửa đường dẫn và user cho phù hợp server của bạn.
+User=typhu
+WorkingDirectory=/opt/ty-phu-bot
+EnvironmentFile=/opt/ty-phu-bot/.env
+ExecStart=/opt/ty-phu-bot/.venv/bin/python -m app.main
+Restart=always
+RestartSec=5
+# Ghi log qua journald.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ty-phu-bot
+# Tăng cường bảo mật.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

@@ -12,9 +12,20 @@ def status_text(room: GameRoom) -> str:
     lines = [f"📋 TRẠNG THÁI\n➡️ Lượt: {room.current_player.name}"]
     for p in room.players:
         icon = "💥" if p.status is PlayerStatus.BANKRUPT else "🔒" if p.status is PlayerStatus.JAILED else "✅"
+        houses = sum(min(room.board[index].houses, 4) for index in p.property_indexes)
+        hotels = sum(room.board[index].houses == 5 for index in p.property_indexes)
+        extras = []
+        if p.rent_shields:
+            extras.append(f"🛡{p.rent_shields}")
+        if not p.mystery_used:
+            extras.append("🎁")
+        illegal = p.lockpicks + p.demolition_bombs + p.getaway_cards
+        if illegal:
+            extras.append(f"🕶{illegal}")
+        extra_text = f" · {' '.join(extras)}" if extras else ""
         lines.append(
             f"{icon} {p.name}: {format_vnd(p.cash)} · "
-            f"{len(p.property_indexes)} đất · ô {p.position}"
+            f"{len(p.property_indexes)} đất · {houses} nhà · {hotels} KS · ô {p.position}{extra_text}"
         )
     return "\n".join(lines)
 

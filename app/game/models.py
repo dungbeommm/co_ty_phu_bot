@@ -38,6 +38,7 @@ class Tile:
     tax: int = 0
     color_group: int | None = None
     owner_id: int | None = None
+    houses: int = 0
 
 
 @dataclass(slots=True)
@@ -52,6 +53,11 @@ class Player:
     doubles_streak: int = 0
     rank: int | None = None
     final_assets: int | None = None
+    mystery_used: bool = False
+    rent_shields: int = 0
+    lockpicks: int = 0
+    demolition_bombs: int = 0
+    getaway_cards: int = 0
 
     @property
     def active(self) -> bool:
@@ -68,6 +74,7 @@ class GameRoom:
     pass_go_salary: int
     min_players: int
     max_players: int
+    topic_id: int | None = None
     phase: Phase = Phase.LOBBY
     turn_index: int = 0
     pending_tile_index: int | None = None

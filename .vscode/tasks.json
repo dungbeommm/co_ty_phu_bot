@@ -1,0 +1,38 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Python: tạo virtual environment",
+      "type": "shell",
+      "command": "python -m venv .venv",
+      "problemMatcher": []
+    },
+    {
+      "label": "Python: cài thư viện",
+      "type": "shell",
+      "command": "${command:python.interpreterPath} -m pip install -r requirements-dev.txt",
+      "problemMatcher": []
+    },
+    {
+      "label": "Test: chạy toàn bộ",
+      "type": "shell",
+      "command": "${command:python.interpreterPath} -m unittest discover -s tests -p 'test_*.py' -v",
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Bot: chạy",
+      "type": "shell",
+      "command": "${command:python.interpreterPath} -m app.main",
+      "options": {
+        "env": {
+          "PYTHONUNBUFFERED": "1"
+        }
+      },
+      "problemMatcher": []
+    }
+  ]
+}

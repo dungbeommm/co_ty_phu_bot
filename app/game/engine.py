@@ -8,6 +8,10 @@ from app.game.money import format_vnd
 
 Roller = Callable[[], tuple[int, int]]
 
+# Giá nhà theo nhóm màu, mô phỏng các mức 50/100/150/200 của Monopoly.
+HOUSE_COSTS = {1: 500_000, 2: 500_000, 3: 1_000_000, 4: 1_000_000, 5: 1_500_000, 6: 2_000_000}
+RENT_MULTIPLIERS = {1: 5, 2: 15, 3: 45, 4: 80, 5: 125}
+
 
 class GameError(ValueError):
     pass
@@ -37,7 +41,10 @@ def start_room(room: GameRoom, actor_id: int) -> None:
 def asset_value(room: GameRoom, player: Player) -> int:
     if player.final_assets is not None:
         return player.final_assets
-    land = sum(room.board[index].price for index in player.property_indexes)
+    land = sum(
+        room.board[index].price + room.board[index].houses * house_cost(room.board[index])
+        for index in player.property_indexes
+    )
     return max(player.cash, 0) + land
 
 
@@ -49,6 +56,7 @@ def mark_bankrupt(room: GameRoom, player: Player) -> tuple[int, int, int]:
     rank = len(room.players) - room.out_count + 1
     for index in player.property_indexes:
         room.board[index].owner_id = None
+        room.board[index].houses = 0
     player.property_indexes.clear()
     player.cash = 0
     player.status = PlayerStatus.BANKRUPT
@@ -76,7 +84,328 @@ def _rent(room: GameRoom, tile_index: int) -> int:
             for candidate in room.board
         )
         return 250_000 * count
+    if tile.kind is TileKind.PROPERTY:
+        if tile.houses:
+            return tile.rent * RENT_MULTIPLIERS[tile.houses]
+        if _owns_full_group(room, tile.owner_id or 0, tile.color_group):
+            return tile.rent * 2
     return tile.rent
+
+
+def house_cost(tile) -> int:
+    """Giá xây theo nhóm màu như các bậc giá phổ biến của Monopoly."""
+    return HOUSE_COSTS.get(tile.color_group, max(200_000, tile.price // 2))
+
+
+def building_name(level: int) -> str:
+    return "khách sạn" if level == 5 else f"nhà #{level}"
+
+
+def _owns_full_group(room: GameRoom, user_id: int, group: int | None) -> bool:
+    if group is None:
+        return False
+    group_tiles = [tile for tile in room.board if tile.color_group == group]
+    return bool(group_tiles) and all(tile.owner_id == user_id for tile in group_tiles)
+
+
+def buildable_properties(room: GameRoom, actor_id: int) -> list[int]:
+    player = room.find_player(actor_id)
+    if not player or room.phase is not Phase.PLAYING or room.current_player.user_id != actor_id:
+        return []
+    result: list[int] = []
+    for index in player.property_indexes:
+        tile = room.board[index]
+        if tile.kind is not TileKind.PROPERTY or tile.houses >= 5:
+            continue
+        if player.cash < house_cost(tile):
+            continue
+        result.append(index)
+    return result
+
+
+def build_house(room: GameRoom, actor_id: int, tile_index: int) -> str:
+    if room.phase is not Phase.PLAYING:
+        raise GameError("Chỉ được xây nhà khi ván đang chơi.")
+    if room.current_player.user_id != actor_id:
+        raise GameError("Chỉ người đang tới lượt được xây nhà.")
+    player = room.find_player(actor_id)
+    if not player or not player.active:
+        raise GameError("Bạn không còn trong ván.")
+    if tile_index not in buildable_properties(room, actor_id):
+        raise GameError("Đất này chưa đủ điều kiện xây nhà.")
+    tile = room.board[tile_index]
+    cost = house_cost(tile)
+    player.cash -= cost
+    tile.houses += 1
+    rent = _rent(room, tile_index)
+    return (
+        f"{'🏨' if tile.houses == 5 else '🏠'} {player.name} xây {building_name(tile.houses)} tại {tile.name}\n"
+        f"💸 Chi phí: {format_vnd(cost)} · Tiền thuê mới: {format_vnd(rent)}"
+    )
+
+
+def demolishable_properties(room: GameRoom, actor_id: int) -> list[int]:
+    player = room.find_player(actor_id)
+    if not player or room.phase is not Phase.PLAYING or room.current_player.user_id != actor_id:
+        return []
+    result: list[int] = []
+    for index in player.property_indexes:
+        tile = room.board[index]
+        if tile.kind is not TileKind.PROPERTY or tile.houses <= 0:
+            continue
+        result.append(index)
+    return result
+
+
+def demolish_house(room: GameRoom, actor_id: int, tile_index: int) -> str:
+    if tile_index not in demolishable_properties(room, actor_id):
+        raise GameError("Bạn không có công trình để phá trên đất này.")
+    player = room.find_player(actor_id)
+    assert player is not None
+    tile = room.board[tile_index]
+    refund = house_cost(tile) // 2
+    tile.houses -= 1
+    player.cash += refund
+    return (
+        f"🏚 {player.name} phá một nhà tại {tile.name}\n"
+        f"💵 Thu hồi: {format_vnd(refund)} · Còn {building_name(tile.houses) if tile.houses else 'đất trống'}"
+    )
+
+
+def steal_from_player(
+    room: GameRoom,
+    actor_id: int,
+    target_id: int,
+    *,
+    rng: random.Random | None = None,
+) -> str:
+    if room.phase is not Phase.PLAYING or room.current_player.user_id != actor_id:
+        raise GameError("Chỉ người đang tới lượt được trộm.")
+    thief = room.find_player(actor_id)
+    target = room.find_player(target_id) if target_id else None
+    if not thief or (target_id and (not target or not target.active or target_id == actor_id)):
+        raise GameError("Mục tiêu không hợp lệ.")
+    rng = rng or random.Random()
+    fee = max(thief.cash, 0) // 5
+    thief.cash -= fee
+    collateral_index = rng.choice(thief.property_indexes) if thief.property_indexes else None
+    used_lockpick = thief.lockpicks > 0
+    if used_lockpick:
+        thief.lockpicks -= 1
+    success_chance = (0.15 if target_id == 0 else 0.30) + (0.15 if used_lockpick else 0)
+    if rng.random() < success_chance:
+        thief.cash += fee
+        if target_id == 0:
+            reward = 50_000_000
+            thief.cash += reward
+            return (
+                f"🏦 Đột nhập ngân hàng thành công! +{format_vnd(reward)}\n"
+                f"✅ Hoàn lại phí trộm {format_vnd(fee)}"
+            )
+        assert target is not None
+        percent = rng.randint(25, 75)
+        amount = max(target.cash, 0) * percent // 100
+        target.cash -= amount
+        thief.cash += amount
+        return (
+            f"🥷 Trộm thành công {percent}% tiền của {target.name}: {format_vnd(amount)}\n"
+            f"✅ Hoàn lại phí trộm {format_vnd(fee)}"
+        )
+
+    lost_land = ""
+    if collateral_index is not None:
+        tile = room.board[collateral_index]
+        thief.property_indexes.remove(collateral_index)
+        tile.owner_id = None
+        tile.houses = 0
+        lost_land = f" và mất đất {tile.name}"
+    if thief.getaway_cards > 0:
+        thief.getaway_cards -= 1
+        return (
+            f"🚨 Trộm thất bại! Mất phí {format_vnd(fee)}{lost_land}.\n"
+            "🚗 Thẻ tẩu thoát kích hoạt — không bị vào tù."
+        )
+    thief.status = PlayerStatus.JAILED
+    thief.jail_turns_left = 3
+    thief.position = _jail_index(room)
+    return f"🚨 Trộm thất bại! Mất phí {format_vnd(fee)}{lost_land} và bị bắt vào tù."
+
+
+def gamble(
+    room: GameRoom,
+    actor_id: int,
+    game: str,
+    stake: int,
+    *,
+    rng: random.Random | None = None,
+) -> str:
+    if room.phase is not Phase.PLAYING or room.current_player.user_id != actor_id:
+        raise GameError("Chỉ người đang tới lượt được chơi đỏ đen.")
+    player = room.find_player(actor_id)
+    if not player:
+        raise GameError("Không tìm thấy người chơi.")
+    if stake <= 0 or player.cash < stake:
+        raise GameError("Số tiền cược không hợp lệ hoặc vượt quá tiền hiện có.")
+    rng = rng or random.Random()
+    if game == "roulette":
+        outcome = rng.randint(1, 100)
+        if outcome <= 55:
+            change = -(stake // 2)
+            result = f"LỖ 50%: {format_vnd(change)}"
+        elif outcome <= 75:
+            change = stake // 4
+            result = f"THẮNG 25%: +{format_vnd(change)}"
+        elif outcome <= 95:
+            change = 0
+            result = "HÒA VỐN"
+        else:
+            change = stake * 4
+            result = f"THẮNG ĐẬM ×5: +{format_vnd(change)} lợi nhuận"
+        player.cash += change
+        return f"🎡 Vòng quay: {result}\n💰 Tiền hiện tại: {format_vnd(player.cash)}"
+    if game not in {"tai", "xiu"}:
+        raise GameError("Trò đỏ đen không hợp lệ.")
+    dice = [rng.randint(1, 6) for _ in range(3)]
+    total = sum(dice)
+    is_triple = len(set(dice)) == 1
+    actual = "tai" if total >= 11 else "xiu"
+    win = not is_triple and game == actual
+    player.cash += stake if win else -stake
+    label = "TÀI" if actual == "tai" else "XỈU"
+    outcome = "THẮNG" if win else "THUA"
+    return (
+        f"🎲 {dice[0]} + {dice[1]} + {dice[2]} = {total} · {label}"
+        f"{' · BỘ BA' if is_triple else ''}\n{outcome} {format_vnd(stake)}"
+        f" · {'+' if win else '-'}{format_vnd(stake)}"
+        f" · Tiền hiện tại: {format_vnd(player.cash)}"
+    )
+
+
+ILLEGAL_ITEMS = {
+    "lockpick": ("Bộ phá khóa", 1_000_000),
+    "bomb": ("Bom phá nhà", 2_000_000),
+    "getaway": ("Thẻ tẩu thoát", 1_500_000),
+}
+
+
+def buy_illegal_item(room: GameRoom, actor_id: int, item_id: str) -> str:
+    if room.phase is not Phase.PLAYING or room.current_player.user_id != actor_id:
+        raise GameError("Chỉ mua ở chợ đen khi đang tới lượt.")
+    player = room.find_player(actor_id)
+    item = ILLEGAL_ITEMS.get(item_id)
+    if not player or not item:
+        raise GameError("Vật phẩm phi pháp không hợp lệ.")
+    name, price = item
+    if player.cash < price:
+        raise GameError(f"Không đủ {format_vnd(price)} để mua {name}.")
+    player.cash -= price
+    if item_id == "lockpick":
+        player.lockpicks += 1
+    elif item_id == "bomb":
+        player.demolition_bombs += 1
+    else:
+        player.getaway_cards += 1
+    return f"🕶 Đã mua {name} với {format_vnd(price)}"
+
+
+def sabotage_house(
+    room: GameRoom,
+    actor_id: int,
+    target_id: int,
+    *,
+    rng: random.Random | None = None,
+) -> str:
+    if room.phase is not Phase.PLAYING or room.current_player.user_id != actor_id:
+        raise GameError("Chỉ phá hoại khi đang tới lượt.")
+    actor = room.find_player(actor_id)
+    target = room.find_player(target_id)
+    if not actor or not target or target_id == actor_id or actor.demolition_bombs <= 0:
+        raise GameError("Không có bom hoặc mục tiêu không hợp lệ.")
+    built = [index for index in target.property_indexes if room.board[index].houses > 0]
+    if not built:
+        raise GameError("Mục tiêu không có nhà hoặc khách sạn để phá.")
+    actor.demolition_bombs -= 1
+    rng = rng or random.Random()
+    if rng.random() >= 0.55:
+        return "💥 Bom phát nổ sai chỗ — đã mất bom nhưng công trình không hư hại."
+    index = rng.choice(built)
+    tile = room.board[index]
+    old = building_name(tile.houses)
+    tile.houses -= 1
+    return f"💣 Đã phá {old} của {target.name} tại {tile.name}!"
+
+
+def surrender(room: GameRoom, actor_id: int) -> TurnResult:
+    if room.phase not in {Phase.PLAYING, Phase.AWAITING_PURCHASE}:
+        raise GameError("Không có ván đang chơi để chịu thua.")
+    player = room.find_player(actor_id)
+    if not player or not player.active:
+        raise GameError("Bạn không còn trong ván.")
+    was_current = room.current_player.user_id == actor_id
+    user_id, rank, assets = mark_bankrupt(room, player)
+    if room.pending_player_id == actor_id:
+        room.pending_player_id = None
+        room.pending_tile_index = None
+        room.phase = Phase.PLAYING
+    winner = _finish_if_needed(room)
+    if room.phase is not Phase.FINISHED and was_current:
+        room.advance_turn()
+    text = f"🏳 {player.name} đã chịu thua và xếp hạng #{rank}."
+    if winner is not None:
+        text += f"\n🏆 {room.find_player(winner).name} chiến thắng!"
+    return TurnResult(
+        text,
+        bankrupt=[(user_id, rank, assets)],
+        winner_id=winner,
+        finished=room.phase is Phase.FINISHED,
+    )
+
+
+def open_mystery_box(
+    room: GameRoom,
+    actor_id: int,
+    *,
+    rng: random.Random | None = None,
+) -> str:
+    """Mỗi người được mở một hộp bí ẩn trong cả ván, không mất lượt."""
+    if room.phase is not Phase.PLAYING:
+        raise GameError("Chỉ mở hộp khi ván đang chơi.")
+    if room.current_player.user_id != actor_id:
+        raise GameError("Chỉ người đang tới lượt được mở hộp.")
+    player = room.find_player(actor_id)
+    if not player or not player.active:
+        raise GameError("Bạn không còn trong ván.")
+    if player.mystery_used:
+        raise GameError("Bạn đã mở hộp bí ẩn trong ván này rồi.")
+
+    player.mystery_used = True
+    rng = rng or random.Random()
+    event = rng.randint(1, 100)
+    if event <= 45:
+        return "📦 Hộp bí ẩn trống — chúc may mắn lần sau!"
+    if event <= 70:
+        player.cash += 500_000
+        return f"🎁 Nhặt được phong bao: +{format_vnd(500_000)}"
+    if event <= 82:
+        player.cash += 1_000_000
+        return f"🎁 Thưởng may mắn: +{format_vnd(1_000_000)}"
+    if event <= 90:
+        player.rent_shields += 1
+        return "🛡 Nhận Khiên miễn tiền thuê: chặn một lần trả tiền thuê!"
+    if event <= 97:
+        indexes = buildable_properties(room, actor_id)
+        if indexes:
+            tile = room.board[rng.choice(indexes)]
+            tile.houses += 1
+            return f"🏠 Trúng nhà miễn phí tại {tile.name}!"
+        player.cash += 250_000
+        return f"🎁 Chưa có đất xây nhà — đổi quà thành {format_vnd(250_000)}"
+    if event <= 99:
+        player.position = 0
+        player.cash += room.pass_go_salary
+        return f"🚀 Dịch chuyển về Xuất phát và nhận {format_vnd(room.pass_go_salary)}"
+    player.cash += 2_000_000
+    return f"🎁 JACKPOT! {player.name} nhận {format_vnd(2_000_000)}"
 
 
 def _jail_index(room: GameRoom) -> int:
@@ -216,13 +545,17 @@ def roll_turn(
         else:
             owner = room.find_player(tile.owner_id)
             rent = _rent(room, tile_index)
-            player.cash -= rent
-            if owner and owner.active:
-                owner.cash += rent
-            lines.append(
-                f"💰 Trả {format_vnd(rent)} tiền thuê cho "
-                f"{owner.name if owner else 'ngân hàng'}."
-            )
+            if player.rent_shields > 0:
+                player.rent_shields -= 1
+                lines.append(f"🛡 Khiên kích hoạt — không phải trả {format_vnd(rent)} tiền thuê!")
+            else:
+                player.cash -= rent
+                if owner and owner.active:
+                    owner.cash += rent
+                lines.append(
+                    f"💰 Trả {format_vnd(rent)} tiền thuê cho "
+                    f"{owner.name if owner else 'ngân hàng'}."
+                )
 
     if player.cash < 0 and player.active:
         user_id, rank, assets = mark_bankrupt(room, player)
