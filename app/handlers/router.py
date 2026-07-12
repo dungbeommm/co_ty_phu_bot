@@ -58,6 +58,7 @@ from app.shop import ITEMS, shop_text
 
 router = Router()
 T = TypeVar("T")
+MENU_CONSUMED_MSG = "Nút này đã được xử lý. Hãy dùng /menu để mở lại menu."
 HELP = """🎲 CỜ TỶ PHÚ BOT
 /menu — mở menu nút bấm
 /newgame — tạo ván trong topic
@@ -136,7 +137,6 @@ def _turn_menu(room: GameRoom) -> InlineKeyboardMarkup:
         if not room.current_player.mystery_used:
             special_actions.append(InlineKeyboardButton(text="🎁 Hộp bí ẩn", callback_data="game:mystery"))
         special_actions.append(InlineKeyboardButton(text="🥷 Trộm", callback_data="game:steal"))
-        special_actions.append(InlineKeyboardButton(text="🤝 Giao dịch", callback_data="game:trade"))
         rows.append(special_actions)
 
     # Hai trò này được phép chơi nhiều lần trong cùng lượt.
@@ -197,6 +197,36 @@ def _demolish_menu(room: GameRoom, actor_id: int) -> InlineKeyboardMarkup | None
         [InlineKeyboardButton(
             text=f"🏚 {room.board[i].name} ({building_name(room.board[i].houses)}) · +{house_cost(room.board[i]) // 2000}K",
             callback_data=f"extra:demolish:{i}",
+        )]
+        for i in indexes
+    ]
+    rows.append([InlineKeyboardButton(text="↩️ Quay lại", callback_data="extra:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _mortgage_menu(room: GameRoom, actor_id: int) -> InlineKeyboardMarkup | None:
+    indexes = mortgageable_properties(room, actor_id)
+    if not indexes:
+        return None
+    rows = [
+        [InlineKeyboardButton(
+            text=f"🏦 {room.board[i].name} · +{mortgage_value(room.board[i]) // 1000}K",
+            callback_data=f"extra:mortgage:{i}",
+        )]
+        for i in indexes
+    ]
+    rows.append([InlineKeyboardButton(text="↩️ Quay lại", callback_data="extra:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _unmortgage_menu(room: GameRoom, actor_id: int) -> InlineKeyboardMarkup | None:
+    indexes = unmortgageable_properties(room, actor_id)
+    if not indexes:
+        return None
+    rows = [
+        [InlineKeyboardButton(
+            text=f"🔓 {room.board[i].name} · -{unmortgage_cost(room.board[i]) // 1000}K",
+            callback_data=f"extra:unmortgage:{i}",
         )]
         for i in indexes
     ]
@@ -546,6 +576,7 @@ async def purchase(callback: CallbackQuery, games: GameManager) -> None:
         sent = await _send_board(message, entry.room, text, _turn_menu(entry.room))
         _activate_menu(entry, sent)
     except GameError as exc:
+        _activate_menu(entry, message)
         await callback.answer(str(exc), show_alert=True)
 
 
@@ -685,6 +716,38 @@ async def game_action(
             await _remove_menu(message)
             sent = await _answer(message, "🏠 Chọn khu đất muốn xây nhà:", menu)
             _activate_menu(entry, sent)
+        elif action == "mortgage":
+            if entry.room.current_player.user_id != callback.from_user.id:
+                raise GameError("Chỉ người đang tới lượt được thế chấp.")
+            menu = _mortgage_menu(entry.room, callback.from_user.id)
+            if not menu:
+                raise GameError("Bạn không có đất nào có thể thế chấp (cần phá hết nhà trước).")
+            if not _claim_active_menu(entry, message):
+                raise GameError(MENU_CONSUMED_MSG)
+            await callback.answer()
+            await _remove_menu(message)
+            sent = await _answer(message, "🏦 Chọn đất muốn thế chấp:", menu)
+            _activate_menu(entry, sent)
+        elif action == "unmortgage":
+            if entry.room.current_player.user_id != callback.from_user.id:
+                raise GameError("Chỉ người đang tới lượt được chuộc đất.")
+            menu = _unmortgage_menu(entry.room, callback.from_user.id)
+            if not menu:
+                raise GameError("Bạn không có đất nào có thể chuộc (hoặc không đủ tiền).")
+            if not _claim_active_menu(entry, message):
+                raise GameError(MENU_CONSUMED_MSG)
+            await callback.answer()
+            await _remove_menu(message)
+            sent = await _answer(message, "🔓 Chọn đất muốn chuộc:", menu)
+            _activate_menu(entry, sent)
+        elif action == "info":
+            text = property_info(entry.room, player.position)
+            await callback.answer()
+            await _answer(message, text)
+        elif action == "log":
+            text = recent_events(entry.room)
+            await callback.answer()
+            await _answer(message, text)
         elif action == "bail":
             if not _claim_active_menu(entry, message):
                 raise GameError("Nút này đã được xử lý. Hãy dùng /menu để mở lại menu.")
@@ -828,7 +891,14 @@ async def game_action(
             await callback.answer()
             await _remove_menu(message)
             await _answer(message, "🗑 Đã huỷ ván.")
+        else:
+            await callback.answer("Thao tác không khả dụng.", show_alert=True)
     except (ValueError, GameError) as exc:
+        # Nếu hành động lỗi *sau khi* đã nhận menu, mở lại menu đang hiển thị để
+        # người chơi bấm lại được, tránh báo nhầm "đã xử lý". Không hồi sinh
+        # menu khi lỗi chính là do bấm đúp (chống bấm đúp vẫn hoạt động).
+        if str(exc) != MENU_CONSUMED_MSG:
+            _activate_menu(entry, message)
         await callback.answer(str(exc), show_alert=True)
 
 
@@ -866,6 +936,12 @@ async def extra_action(callback: CallbackQuery, db: Database, games: GameManager
         elif parts[1] == "taixiu":
             async with entry.lock:
                 text = gamble(entry.room, callback.from_user.id, parts[2], int(parts[3]))
+        elif parts[1] == "mortgage":
+            async with entry.lock:
+                text = mortgage_property(entry.room, callback.from_user.id, int(parts[2]))
+        elif parts[1] == "unmortgage":
+            async with entry.lock:
+                text = unmortgage_property(entry.room, callback.from_user.id, int(parts[2]))
         elif parts[1] == "illegal":
             async with entry.lock:
                 text = buy_illegal_item(entry.room, callback.from_user.id, parts[2])
