@@ -20,7 +20,10 @@ RoomKey = tuple[int, int | None]
 class RoomEntry:
     room: GameRoom
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    active_menu_message_id: int | None = None
+    # Nhiều menu có thể cùng tồn tại (ví dụ /menu hoặc bảng trạng thái).
+    # Mỗi message chỉ được xử lý đúng một callback để chống bấm đúp.
+    active_menu_message_ids: set[int] = field(default_factory=set)
+    consumed_menu_message_ids: set[int] = field(default_factory=set)
 
 
 class GameManager:

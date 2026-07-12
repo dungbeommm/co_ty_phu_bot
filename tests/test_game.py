@@ -210,20 +210,27 @@ class GameTests(unittest.TestCase):
         self.assertGreater(room.players[0].cash, before)
 
     def test_steal_is_limited_once_per_turn(self) -> None:
+        class PlayerSuccessRng:
+            def random(self) -> float:
+                return 0.04  # Thành công dưới mốc trộm người chơi 5%.
+
+            def randint(self, _start: int, _end: int) -> int:
+                return 73
+
         room = make_room()
         join_room(room, 2, "B")
         start_room(room, 1)
         before = room.players[0].cash
         target_before = room.players[1].cash
-        steal_from_player(room, 1, 2, rng=random.Random(1))
+        steal_from_player(room, 1, 2, rng=PlayerSuccessRng())
         first_reward = target_before * 73 // 100
         self.assertEqual(room.players[0].cash, before + first_reward)
         self.assertEqual(room.players[1].cash, target_before - first_reward)
         with self.assertRaises(GameError):
-            steal_from_player(room, 1, 2, rng=random.Random(1))
+            steal_from_player(room, 1, 2, rng=PlayerSuccessRng())
         next_round(room)
         second_before = room.players[1].cash
-        steal_from_player(room, 1, 2, rng=random.Random(1))
+        steal_from_player(room, 1, 2, rng=PlayerSuccessRng())
         self.assertEqual(room.players[1].cash, second_before - second_before * 73 // 100)
 
     def test_gamble_uses_current_cash(self) -> None:
@@ -258,11 +265,15 @@ class GameTests(unittest.TestCase):
             build_house(room, 1, 1)
 
     def test_bank_theft_rewards_fifty_million(self) -> None:
+        class BankSuccessRng:
+            def random(self) -> float:
+                return 0.04  # Thành công với tỷ lệ ngân hàng mới: 5%.
+
         room = make_room()
         join_room(room, 2, "B")
         start_room(room, 1)
         before = room.players[0].cash
-        text = steal_from_player(room, 1, 0, rng=random.Random(1))
+        text = steal_from_player(room, 1, 0, rng=BankSuccessRng())
         self.assertIn("50.000.000", text)
         self.assertEqual(room.players[0].cash, before + 50_000_000)
         next_round(room)

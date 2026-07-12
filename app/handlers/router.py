@@ -350,14 +350,27 @@ async def _send_board(
 
 
 def _activate_menu(entry, sent: Message) -> None:
-    entry.active_menu_message_id = sent.message_id
+    """Đăng ký menu mới mà không làm vô hiệu hóa các menu trước đó."""
+    entry.active_menu_message_ids.add(sent.message_id)
+    # Giới hạn lịch sử để không tăng bộ nhớ trong các ván dài.
+    if len(entry.active_menu_message_ids) > 50:
+        entry.active_menu_message_ids = set(sorted(entry.active_menu_message_ids)[-50:])
 
 
 def _claim_active_menu(entry, message: Message) -> bool:
-    """Mỗi menu chỉ nhận đúng một thao tác hợp lệ, chống bấm liên tục."""
-    if entry.active_menu_message_id != message.message_id:
+    """Nhận callback đúng một lần cho chính menu được bấm.
+
+    Không dùng "menu gần nhất" toàn phòng: người chơi có thể mở /menu hoặc
+    /status nhiều lần mà những menu trước đó vẫn hợp lệ cho tới khi được bấm.
+    Luật lượt chơi vẫn được engine kiểm tra ở từng hành động.
+    """
+    message_id = message.message_id
+    if message_id not in entry.active_menu_message_ids:
         return False
-    entry.active_menu_message_id = None
+    entry.active_menu_message_ids.remove(message_id)
+    entry.consumed_menu_message_ids.add(message_id)
+    if len(entry.consumed_menu_message_ids) > 100:
+        entry.consumed_menu_message_ids = set(sorted(entry.consumed_menu_message_ids)[-100:])
     return True
 
 
@@ -519,7 +532,7 @@ async def purchase(callback: CallbackQuery, games: GameManager) -> None:
         await callback.answer("Không phải quyết định của bạn.", show_alert=True)
         return
     if not _claim_active_menu(entry, message):
-        await callback.answer("Menu này đã được dùng hoặc đã cũ.", show_alert=True)
+        await callback.answer("Nút này đã được xử lý. Hãy dùng /menu để mở lại menu.", show_alert=True)
         return
     try:
         async with entry.lock:
@@ -549,7 +562,7 @@ async def build_action(callback: CallbackQuery, games: GameManager) -> None:
         await callback.answer("Chỉ người đang tới lượt được xây nhà.", show_alert=True)
         return
     if not _claim_active_menu(entry, message):
-        await callback.answer("Menu này đã được dùng hoặc đã cũ.", show_alert=True)
+        await callback.answer("Nút này đã được xử lý. Hãy dùng /menu để mở lại menu.", show_alert=True)
         return
     await callback.answer()
     await _remove_menu(message)
@@ -602,7 +615,7 @@ async def game_action(
             if player:
                 raise GameError("Bạn đã ở trong phòng chờ.")
             if not _claim_active_menu(entry, message):
-                raise GameError("Menu này đã được dùng hoặc đã cũ.")
+                raise GameError("Nút này đã được xử lý. Hãy dùng /menu để mở lại menu.")
             await db.upsert_user(
                 callback.from_user.id,
                 message.chat.id,
@@ -623,7 +636,7 @@ async def game_action(
             if entry.room.host_id != callback.from_user.id or entry.room.phase is not Phase.LOBBY:
                 raise GameError("Chỉ chủ phòng có thể đổi chế độ an toàn trước khi bắt đầu.")
             if not _claim_active_menu(entry, message):
-                raise GameError("Menu này đã được dùng hoặc đã cũ.")
+                raise GameError("Nút này đã được xử lý. Hãy dùng /menu để mở lại menu.")
             entry.room.safe_mode = not entry.room.safe_mode
             await callback.answer()
             await _remove_menu(message)
@@ -637,7 +650,7 @@ async def game_action(
             if len(entry.room.players) < entry.room.min_players:
                 raise GameError(f"Cần ít nhất {entry.room.min_players} người.")
             if not _claim_active_menu(entry, message):
-                raise GameError("Menu này đã được dùng hoặc đã cũ.")
+                raise GameError("Nút này đã được xử lý. Hãy dùng /menu để mở lại menu.")
             async with entry.lock:
                 start_room(entry.room, callback.from_user.id)
                 first = entry.room.current_player.name
@@ -654,7 +667,7 @@ async def game_action(
             if entry.room.current_player.user_id != callback.from_user.id:
                 raise GameError(f"Chưa tới lượt bạn. Đang tới lượt {entry.room.current_player.name}.")
             if not _claim_active_menu(entry, message):
-                raise GameError("Menu này đã được dùng hoặc đã cũ.")
+                raise GameError("Nút này đã được xử lý. Hãy dùng /menu để mở lại menu.")
             await callback.answer()
             await _remove_menu(message)
             await _run_roll(message, callback.from_user.id, db, games)
@@ -667,14 +680,14 @@ async def game_action(
                     "Chỉ xây được khi đang đứng trên đất của mình đã ghé ít nhất 2 lần."
                 )
             if not _claim_active_menu(entry, message):
-                raise GameError("Menu này đã được dùng hoặc đã cũ.")
+                raise GameError("Nút này đã được xử lý. Hãy dùng /menu để mở lại menu.")
             await callback.answer()
             await _remove_menu(message)
             sent = await _answer(message, "🏠 Chọn khu đất muốn xây nhà:", menu)
             _activate_menu(entry, sent)
         elif action == "bail":
             if not _claim_active_menu(entry, message):
-                raise GameError("Menu này đã được dùng hoặc đã cũ.")
+                raise GameError("Nút này đã được xử lý. Hãy dùng /menu để mở lại menu.")
             async with entry.lock:
                 text = pay_bail(entry.room, callback.from_user.id)
             await callback.answer()
@@ -685,7 +698,7 @@ async def game_action(
             if entry.room.current_player.user_id != callback.from_user.id:
                 raise GameError("Chỉ người đang tới lượt được mua bảo hiểm.")
             if not _claim_active_menu(entry, message):
-                raise GameError("Menu này đã được dùng hoặc đã cũ.")
+                raise GameError("Nút này đã được xử lý. Hãy dùng /menu để mở lại menu.")
             async with entry.lock:
                 text = buy_insurance(entry.room, callback.from_user.id)
             await callback.answer()
@@ -698,7 +711,7 @@ async def game_action(
             if player.mystery_used:
                 raise GameError("Bạn đã mở hộp bí ẩn trong ván này rồi.")
             if not _claim_active_menu(entry, message):
-                raise GameError("Menu này đã được dùng hoặc đã cũ.")
+                raise GameError("Nút này đã được xử lý. Hãy dùng /menu để mở lại menu.")
             async with entry.lock:
                 text = open_mystery_box(entry.room, callback.from_user.id)
             await callback.answer("Mở quà!")
@@ -712,7 +725,7 @@ async def game_action(
             if not menu:
                 raise GameError("Bạn chưa có nhà nào có thể phá.")
             if not _claim_active_menu(entry, message):
-                raise GameError("Menu này đã được dùng hoặc đã cũ.")
+                raise GameError("Nút này đã được xử lý. Hãy dùng /menu để mở lại menu.")
             await callback.answer()
             await _remove_menu(message)
             sent = await _answer(message, "🏚 Chọn nhà muốn phá (thu hồi 50% giá xây):", menu)
@@ -726,7 +739,7 @@ async def game_action(
             if not menu:
                 raise GameError("Không có mục tiêu để trộm.")
             if not _claim_active_menu(entry, message):
-                raise GameError("Menu này đã được dùng hoặc đã cũ.")
+                raise GameError("Nút này đã được xử lý. Hãy dùng /menu để mở lại menu.")
             await callback.answer()
             await _remove_menu(message)
             sent = await _answer(message, "🥷 Chọn người muốn trộm:", menu)
@@ -738,7 +751,7 @@ async def game_action(
             if not menu:
                 raise GameError("Bạn không có tiền để đặt cược.")
             if not _claim_active_menu(entry, message):
-                raise GameError("Menu này đã được dùng hoặc đã cũ.")
+                raise GameError("Nút này đã được xử lý. Hãy dùng /menu để mở lại menu.")
             await callback.answer()
             await _remove_menu(message)
             sent = await _answer(
@@ -755,7 +768,7 @@ async def game_action(
             if not menu:
                 raise GameError("Bạn không có tiền để đặt cược.")
             if not _claim_active_menu(entry, message):
-                raise GameError("Menu này đã được dùng hoặc đã cũ.")
+                raise GameError("Nút này đã được xử lý. Hãy dùng /menu để mở lại menu.")
             await callback.answer()
             await _remove_menu(message)
             sent = await _answer(message, f"🎲 Chọn cửa và tiền cược · hiện có {player.cash:,}₫", menu)
@@ -766,7 +779,7 @@ async def game_action(
             if entry.room.current_player.user_id != callback.from_user.id:
                 raise GameError("Chỉ người đang tới lượt được vào chợ đen.")
             if not _claim_active_menu(entry, message):
-                raise GameError("Menu này đã được dùng hoặc đã cũ.")
+                raise GameError("Nút này đã được xử lý. Hãy dùng /menu để mở lại menu.")
             await callback.answer()
             await _remove_menu(message)
             sent = await _answer(message, "🕶 CHỢ ĐEN — mua bằng tiền trong ván:", _black_market_menu())
@@ -782,7 +795,7 @@ async def game_action(
             if not menu:
                 raise GameError("Không có đối thủ sở hữu công trình để phá.")
             if not _claim_active_menu(entry, message):
-                raise GameError("Menu này đã được dùng hoặc đã cũ.")
+                raise GameError("Nút này đã được xử lý. Hãy dùng /menu để mở lại menu.")
             await callback.answer()
             await _remove_menu(message)
             sent = await _answer(message, "💣 Chọn đối thủ để phá ngẫu nhiên một công trình:", menu)
@@ -791,14 +804,14 @@ async def game_action(
             if entry.room.current_player.user_id != callback.from_user.id:
                 raise GameError("Bạn có thể chịu thua khi đến lượt mình.")
             if not _claim_active_menu(entry, message):
-                raise GameError("Menu này đã được dùng hoặc đã cũ.")
+                raise GameError("Nút này đã được xử lý. Hãy dùng /menu để mở lại menu.")
             await callback.answer()
             await _remove_menu(message)
             sent = await _answer(message, "⚠️ Chịu thua sẽ bán toàn bộ tài sản và rời ván.", _surrender_menu())
             _activate_menu(entry, sent)
         elif action == "status":
             if not _claim_active_menu(entry, message):
-                raise GameError("Menu này đã được dùng hoặc đã cũ.")
+                raise GameError("Nút này đã được xử lý. Hãy dùng /menu để mở lại menu.")
             await callback.answer()
             await _remove_menu(message)
             async with entry.lock:
@@ -810,7 +823,7 @@ async def game_action(
             if entry.room.host_id != callback.from_user.id:
                 raise GameError("Chỉ chủ phòng được huỷ.")
             if not _claim_active_menu(entry, message):
-                raise GameError("Menu này đã được dùng hoặc đã cũ.")
+                raise GameError("Nút này đã được xử lý. Hãy dùng /menu để mở lại menu.")
             await games.remove(message.chat.id, _topic_id(message))
             await callback.answer()
             await _remove_menu(message)
@@ -833,7 +846,7 @@ async def extra_action(callback: CallbackQuery, db: Database, games: GameManager
         await callback.answer("Chỉ người đang tới lượt được thao tác.", show_alert=True)
         return
     if not _claim_active_menu(entry, message):
-        await callback.answer("Menu này đã được dùng hoặc đã cũ.", show_alert=True)
+        await callback.answer("Nút này đã được xử lý. Hãy dùng /menu để mở lại menu.", show_alert=True)
         return
     await callback.answer()
     await _remove_menu(message)

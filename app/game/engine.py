@@ -494,7 +494,9 @@ def steal_from_player(
     used_lockpick = thief.lockpicks > 0
     if used_lockpick:
         thief.lockpicks -= 1
-    success_chance = (0.15 if target_id == 0 else 0.30) + (0.15 if used_lockpick else 0)
+    # Trộm người chơi: 10%; trộm ngân hàng: 5%.
+    # Bộ phá khóa vẫn cộng thêm 15 điểm phần trăm.
+    success_chance = (0.05 if target_id == 0 else 0.10) + (0.15 if used_lockpick else 0)
     if rng.random() < success_chance:
         thief.cash += fee
         if target_id == 0:
