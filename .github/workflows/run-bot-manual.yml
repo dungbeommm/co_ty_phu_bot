@@ -1,0 +1,60 @@
+name: Run Telegram Bot Manually
+
+on:
+  workflow_dispatch:
+    inputs:
+      runtime_minutes:
+        description: "Số phút chạy bot (tối đa 350)"
+        required: false
+        default: "350"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ty-phu-bot-manual-run
+  cancel-in-progress: true
+
+jobs:
+  run-bot:
+    name: Run bot temporarily
+    runs-on: ubuntu-latest
+    # GitHub-hosted runner là tạm thời, nên workflow này không phải triển khai 24/7.
+    timeout-minutes: 355
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Verify configured token and compile code
+        run: |
+          python -m compileall -q app
+          python -c "from app.config import Settings; assert Settings.from_env().bot_token; print('Token configuration found.')"
+
+      - name: Run bot polling
+        run: |
+          minutes="$(jq -r '.inputs.runtime_minutes // "350"' "$GITHUB_EVENT_PATH")"
+          case "$minutes" in
+            ''|*[!0-9]*) minutes=350 ;;
+          esac
+          if [ "$minutes" -gt 350 ]; then minutes=350; fi
+          if [ "$minutes" -lt 1 ]; then minutes=1; fi
+          echo "Running bot for up to ${minutes} minute(s)."
+          timeout --signal=SIGTERM "${minutes}m" python -m app.main || code=$?
+          if [ "${code:-0}" -ne 0 ] && [ "${code:-0}" -ne 124 ]; then
+            exit "$code"
+          fi
+          echo "Bot run ended normally or reached the requested time limit."
